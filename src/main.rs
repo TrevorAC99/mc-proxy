@@ -1,6 +1,14 @@
+use std::cmp::min;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::thread;
+
+mod io_extensions;
+mod varint;
+
+use io_extensions::{ReadByte};
+use crate::varint::{ReadVarInt, VarInt};
+
 
 fn main() {
     println!("Hello, world!");
@@ -53,13 +61,13 @@ fn handle_connection(mut client_stream: TcpStream) -> std::io::Result<()> {
     let c_to_s = {
         let client_stream = client_stream.try_clone()?;
         let server_stream = server_stream.try_clone()?;
-        thread::spawn(|| forward(client_stream, server_stream))
+        thread::spawn(|| forward_stream(client_stream, server_stream))
     };
 
     let s_to_c = {
         let client_stream = client_stream.try_clone()?;
         let server_stream = server_stream.try_clone()?;
-        thread::spawn(|| forward(server_stream, client_stream))
+        thread::spawn(|| forward_stream(server_stream, client_stream))
     };
 
     c_to_s.join().unwrap()?;
@@ -69,10 +77,9 @@ fn handle_connection(mut client_stream: TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-const FORWARD_BUFFER_SIZE: usize = 1024;
+const FORWARD_BUFFER_SIZE: usize = 1024 * 4;
 
-/// TODO: Convert this to read and then forward full packets.
-fn forward(mut reader: TcpStream, mut writer: TcpStream) -> std::io::Result<()> {
+fn forward_stream(mut reader: TcpStream, mut writer: TcpStream) -> std::io::Result<()> {
     let mut buf = [0; FORWARD_BUFFER_SIZE];
     loop {
         // Reads one byte before trying to fill the entire buffer so that
@@ -91,8 +98,48 @@ fn forward(mut reader: TcpStream, mut writer: TcpStream) -> std::io::Result<()> 
     }
 }
 
+/// TODO: Figure out why this doesn't work
+fn _forward_packets(mut reader: TcpStream, mut writer: TcpStream) -> std::io::Result<()> {
+    let mut len_buf = Vec::with_capacity(3);
+    let mut buf = vec![0; FORWARD_BUFFER_SIZE];
+    loop {
+        len_buf.clear();
+        let mut shift = 0;
+        let mut length = 0;
+        loop {
+            let byte = reader.read_byte()?;
+            length |= ((byte & SEGMENT_BITS) as usize) << shift;
+            len_buf.push(byte);
+            shift += 7;
+            if (byte & CONTINUE_BIT) == 0 {
+                break;
+            }
+            if shift >= i32::BITS {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "Invalid varint",
+                ));
+            }
+        };
+
+        print!("[{}] Packet length: {} -", reader.peer_addr()?, length);
+        len_buf.iter().for_each(|byte| { print!(" {:08b} ", byte); });
+        println!();
+        writer.write_all(&len_buf)?;
+        while length > 0 {
+            let chunk_size = min(FORWARD_BUFFER_SIZE, length);
+            println!("[{}] Chunk size: {}", reader.peer_addr()?, chunk_size);
+
+            reader.read_exact(&mut buf[..chunk_size])?;
+            writer.write_all(&buf[..chunk_size])?;
+
+            length -= chunk_size;
+        }
+    }
+}
+
 fn lookup_destination(server_address: &str, port: u16) -> Option<String> {
-    if port == 25565 && server_address.eq_ignore_ascii_case("localtest") {
+    if port == 25565 && server_address.eq_ignore_ascii_case("localhost") {
         println!("Proxy found for {server_address}:{port}");
         Some("127.0.0.1:25566".to_string())
     } else {
@@ -132,56 +179,9 @@ fn read_u16(bytes: &[u8], pos: &mut usize) -> u16 {
     u16::from_be_bytes(bytes[*pos - 2..*pos].try_into().unwrap())
 }
 
-struct VarInt {
-    value: i32,
-    buf: [u8; 5],
-    byte_count: usize,
-}
-
-impl VarInt {
-    // fn bytes(&self) -> Vec<u8> {
-    //     self.buf[..self.byte_count].to_vec()
-    // }
-
-    fn bytes(&self) -> &[u8] {
-        &self.buf[..self.byte_count]
-    }
-
-    fn len(&self) -> usize {
-        self.byte_count
-    }
-}
-
-fn read_varint_from_stream(stream: &mut TcpStream) -> std::io::Result<VarInt> {
-    let mut buf: [u8; 5] = [0; 5];
-    let mut idx = 0;
-    let mut shift = 0;
-    let mut value = 0;
-    loop {
-        stream.read_exact(&mut buf[idx..idx + 1])?;
-        let byte = buf[idx];
-        value |= ((byte & SEGMENT_BITS) as i32) << shift;
-        idx += 1;
-        if (byte & CONTINUE_BIT) == 0 {
-            break Ok(VarInt {
-                value,
-                buf,
-                byte_count: idx,
-            });
-        }
-        shift += SEGMENT_BITS.count_ones();
-        if shift >= i32::BITS {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Invalid varint",
-            ));
-        }
-    }
-}
-
 fn read_uncompressed_packet(stream: &mut TcpStream) -> std::io::Result<UncompressedPacket> {
-    let length = read_varint_from_stream(stream)?;
-    if length.value == 0 {
+    let length = stream.read_varint()?;
+    if length.value() == 0 {
         eprintln!("[{}] Empty packet", stream.peer_addr()?);
         return Err(std::io::Error::new(
             ErrorKind::Other,
@@ -189,32 +189,30 @@ fn read_uncompressed_packet(stream: &mut TcpStream) -> std::io::Result<Uncompres
         ));
     }
 
-    let packet_id = read_varint_from_stream(stream)?;
+    let packet_id = stream.read_varint()?;
 
-    let mut data = vec![0u8; length.value as usize - packet_id.len()];
+    let mut data = vec![0u8; length.value() as usize - packet_id.len()];
     stream.read_exact(&mut data)?;
 
     Ok(UncompressedPacket {
-        length: length.value,
-        length_bytes: length.bytes().into(),
-        packet_id: packet_id.value,
-        packet_id_bytes: packet_id.bytes().into(),
+        length: length,
+        packet_id: packet_id,
         data,
     })
 }
 
 struct UncompressedPacket {
-    length: i32,
-    length_bytes: Vec<u8>,
-    packet_id: i32,
-    packet_id_bytes: Vec<u8>,
+    length: VarInt,
+    packet_id: VarInt,
     data: Vec<u8>,
 }
 
 impl UncompressedPacket {
     fn write_to<T: Write>(&self, writer: &mut T) -> std::io::Result<()> {
-        writer.write_all(&self.length_bytes)?;
-        writer.write_all(&self.packet_id_bytes)?;
+        _ = self.length;
+        _ = self.packet_id;
+        writer.write_all(&self.length.bytes())?;
+        writer.write_all(&self.packet_id.bytes())?;
         writer.write_all(&self.data)
     }
 }
