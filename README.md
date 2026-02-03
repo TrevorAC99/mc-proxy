@@ -14,3 +14,14 @@ have it enabled
 - Use the [notify](https://crates.io/crates/notify) crate to watch a mappings 
 file (toml?) in a config directory to allow live updates
 
+# CLI
+```
+Reverse proxy for Minecraft servers
+
+Usage: mc-proxy [OPTIONS]
+
+Options:
+  -l, --listen <LISTEN>  [default: 127.0.0.1:25565]
+  -h, --help             Print help
+  -V, --version          Print version
+```
