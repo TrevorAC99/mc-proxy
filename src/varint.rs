@@ -1,4 +1,5 @@
-use crate::io_extensions::ReadByte;
+use crate::read_byte::ReadByte;
+use crate::result::Result;
 use std::io::Read;
 
 const SEGMENT_BITS: u8 = 0b0111_1111;
@@ -68,7 +69,7 @@ impl<R: Read> ReadVarInt for R {
     }
 }
 
-pub fn read_varint(input: &[u8], pos: &mut usize) -> Result<VarInt, ()> {
+pub fn read_varint(input: &[u8], pos: &mut usize) -> Result<VarInt> {
     let mut bytes = [0u8; 5];
     let mut idx = 0;
     loop {
@@ -81,7 +82,7 @@ pub fn read_varint(input: &[u8], pos: &mut usize) -> Result<VarInt, ()> {
         }
         idx += 1;
         if idx > 4 {
-            return Err(());
+            return Err("error reading varint from slice".into());
         }
     }
 }

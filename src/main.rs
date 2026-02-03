@@ -1,25 +1,18 @@
+use args::Args;
 use clap::Parser;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::thread;
 
-mod io_extensions;
+mod args;
 mod packet;
+mod read_byte;
+mod result;
 mod varint;
 
 use crate::packet::{ReadPacket, WritePacket};
+use crate::result::{Error, Result};
 use crate::varint::read_varint;
-
-#[derive(Parser, Debug)]
-#[command(version, about = "Reverse proxy for Minecraft servers", long_about = None)]
-struct Args {
-    #[arg(short, long, default_value = "127.0.0.1:25565")]
-    listen: SocketAddr,
-}
-
-fn to_io_err(msg: &'static str) -> std::io::Error {
-    std::io::Error::new(ErrorKind::Other, msg)
-}
 
 fn main() {
     let args = Args::parse();
@@ -32,19 +25,22 @@ fn main() {
         println!("Connection from {}", addr);
         thread::spawn(move || {
             let result = handle_connection(client_stream, args.listen);
-            if let Err(e) = result {
-                eprintln!("{} - {}", e.kind(), e);
+            match result {
+                Err(Error::Io(err)) => eprintln!("{} - {}", err.kind(), err),
+                Err(Error::Other(msg)) => eprintln!("{msg}"),
+                _ => (),
             }
         });
     }
 }
 
-fn handle_connection(mut client_stream: TcpStream, self_addr: SocketAddr) -> std::io::Result<()> {
+fn handle_connection(mut client_stream: TcpStream, self_addr: SocketAddr) -> Result<()> {
     let packet = client_stream.read_packet()?;
 
-    let data = packet.data(false).map_err(to_io_err)?;
+    let data = packet.data(false).map_err(Error::from)?;
 
-    let handshake = parse_handshake(data).map_err(|_| to_io_err("Failed to parse handshake"))?;
+    let handshake =
+        parse_handshake(data).map_err::<Error, _>(|_| "Failed to parse handshake".into())?;
     println!("Protocol Version: {}", handshake.protocol_version);
     println!("Server Address  : {}", handshake.server_address);
     println!("Port            : {}", handshake.port);
@@ -64,10 +60,7 @@ fn handle_connection(mut client_stream: TcpStream, self_addr: SocketAddr) -> std
             "Proxy for {}:{} will cause an infinite loop!",
             handshake.server_address, handshake.port
         );
-        return Err(std::io::Error::new(
-            ErrorKind::Other,
-            "Configured proxy will cause an infinite loop!",
-        ));
+        return Err("Configured proxy will cause an infinite loop!".into());
     }
 
     let mut server_stream = TcpStream::connect(&server_addr).map_err(|err| {
@@ -127,17 +120,18 @@ fn lookup_destination(server_address: &str, port: u16) -> Option<SocketAddr> {
     }
 }
 
-fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String, ()> {
+fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String> {
     let length = read_varint(bytes, pos)?.value() as usize;
-    let string = String::from_utf8_lossy(&bytes[(*pos)..(*pos + length)]);
+    let string = String::from_utf8(bytes[(*pos)..(*pos + length)].to_vec())
+        .map_err::<Error, _>(|_| "error reading string data from slice".into())?;
     *pos += length;
-    Ok(String::from(string))
+    Ok(string)
 }
 
-fn read_u16(bytes: &[u8], pos: &mut usize) -> Result<u16, ()> {
+fn read_u16(bytes: &[u8], pos: &mut usize) -> Result<u16> {
     *pos += 2;
     if bytes.len() < *pos {
-        return Err(());
+        return Err("error to read u16 from slice".into());
     }
     Ok(u16::from_be_bytes(
         bytes[*pos - 2..*pos].try_into().unwrap(),
@@ -151,7 +145,7 @@ struct Handshake {
     intent: i32,
 }
 
-fn parse_handshake(bytes: &[u8]) -> Result<Handshake, ()> {
+fn parse_handshake(bytes: &[u8]) -> Result<Handshake> {
     let mut pos = 0;
     Ok(Handshake {
         protocol_version: read_varint(bytes, &mut pos)?.value(),

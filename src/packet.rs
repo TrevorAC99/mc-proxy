@@ -1,4 +1,5 @@
 use crate::read_varint;
+use crate::result::Result;
 use crate::varint::{ReadVarInt, VarInt};
 use std::io::{Read, Write};
 
@@ -8,21 +9,21 @@ pub struct Packet {
 }
 
 impl Packet {
-    pub fn packet_id(&self, compressed: bool) -> Result<VarInt, &'static str> {
+    pub fn packet_id(&self, compressed: bool) -> Result<VarInt> {
         let mut pos = 0;
         if !compressed {
-            read_varint(&self.bytes, &mut pos).map_err(|_| "Failed to read packet_id varint")
+            read_varint(&self.bytes, &mut pos).map_err(|_| "Failed to read packet_id varint".into())
         } else {
-            Err("Packet::packet_id() not yet implemented for compressed packets")
+            Err("Packet::packet_id() not yet implemented for compressed packets".into())
         }
     }
 
-    pub fn data(&self, compressed: bool) -> Result<&[u8], &'static str> {
+    pub fn data(&self, compressed: bool) -> Result<&[u8]> {
         let packet_id = self.packet_id(compressed)?;
         if !compressed {
             Ok(&self.bytes[packet_id.len()..])
         } else {
-            Err("Packet::data() not yet implemented for compressed packets")
+            Err("Packet::data() not yet implemented for compressed packets".into())
         }
     }
 }
