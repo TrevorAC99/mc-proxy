@@ -1,6 +1,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::thread;
+use clap::Parser;
 
 mod io_extensions;
 mod packet;
@@ -9,20 +10,28 @@ mod varint;
 use crate::packet::{ReadPacket, WritePacket};
 use crate::varint::read_varint;
 
+#[derive(Parser, Debug)]
+#[command(version, about = "Reverse proxy for Minecraft servers", long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "127.0.0.1:25565")]
+    listen: SocketAddr,
+}
+
 fn to_io_err(msg: &'static str) -> std::io::Error {
     std::io::Error::new(ErrorKind::Other, msg)
 }
 
 fn main() {
-    println!("Starting proxy...");
-    let bind_addr: SocketAddr = "127.0.0.1:25565".parse().unwrap();
-    let listener = std::net::TcpListener::bind(bind_addr).unwrap();
+    let args = Args::parse();
+
+    println!("Listening on {}", args.listen);
+    let listener = std::net::TcpListener::bind(args.listen).unwrap();
 
     loop {
         let (client_stream, addr) = listener.accept().unwrap();
         println!("Connection from {}", addr);
         thread::spawn(move || {
-            let result = handle_connection(client_stream, bind_addr);
+            let result = handle_connection(client_stream, args.listen);
             if let Err(e) = result {
                 eprintln!("{} - {}", e.kind(), e);
             }
