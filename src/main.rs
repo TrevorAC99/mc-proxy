@@ -1,7 +1,7 @@
+use clap::Parser;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::thread;
-use clap::Parser;
 
 mod io_extensions;
 mod packet;
